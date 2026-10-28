@@ -43,7 +43,8 @@ Batch invariance is unsupported. Other prefill backends do not use this path.
 
 Cached chunks use FP8 FMHA when the maximum query length is at least 512 and
 the maximum context length is at least 8192. Smaller chunks retain BF16
-attention. Opting in also uses BF16 attention for new-token causal prefill,
+attention. Calls exceeding the kernels' 32-bit indexing limits use the
+standard path. Opting in also uses BF16 attention for new-token causal prefill,
 bypassing ASM prefill and its metadata allocation on the target model.
 Speculative draft models retain their existing attention routing.
 

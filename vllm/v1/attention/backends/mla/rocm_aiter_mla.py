@@ -2906,6 +2906,12 @@ class AiterMLAImpl(MLACommonImpl[AiterMLAMetadata]):
                 and kv_c_and_k_pe_cache.is_contiguous()
                 and prefill.q_data_type == torch.bfloat16
                 and q.dtype == torch.bfloat16
+                and 0 < q.numel() < 2**31
+                # FlyDSL uses int32 flattened output indices.
+                and all(
+                    c.num_context_tokens * self.num_heads * 192 < 2**31
+                    for c in chunked.chunks
+                )
                 and any(
                     use_fp8_context(c.max_query_len, c.max_seq_len)
                     for c in chunked.chunks
