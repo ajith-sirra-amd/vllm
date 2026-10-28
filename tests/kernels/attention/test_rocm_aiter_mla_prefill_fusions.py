@@ -555,7 +555,6 @@ def test_flydsl_fp8_new_tokens_causal_graph_replay(default_vllm_config, lengths)
     from vllm.v1.attention.backends.mla.prefill.aiter_flash_attn import (
         AiterFlashAttnPrefillBackend,
     )
-
     from vllm.v1.attention.ops.rocm_aiter_mla_fp8_quant import (
         fused_qkv_per_tensor_quant,
     )
@@ -605,8 +604,12 @@ def test_flydsl_fp8_new_tokens_causal_graph_replay(default_vllm_config, lengths)
             reference = torch.einsum("hqk,khd->qhd", logits.softmax(-1), vf)
             error = output[begin:end].double() - reference
             assert torch.isfinite(error).all()
-            assert error.square().mean().sqrt() / reference.square().mean().sqrt() < 0.10
-            assert (lse[:, begin:end].double() - logits.logsumexp(-1)).abs().max() < 0.20
+            assert (
+                error.square().mean().sqrt() / reference.square().mean().sqrt() < 0.10
+            )
+            assert (
+                lse[:, begin:end].double() - logits.logsumexp(-1)
+            ).abs().max() < 0.20
 
     for _ in range(2):
         check(*run())
