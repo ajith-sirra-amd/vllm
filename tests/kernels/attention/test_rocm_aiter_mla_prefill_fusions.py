@@ -374,8 +374,11 @@ def test_flydsl_fp8_projection_and_fmha_graph_replay(preshuffled):
     new_k = torch.randn_like(q) * 2
     new_v = torch.randn(20, heads, 128, device=device, dtype=DTYPE) * 3
     chunk = MLACommonPrefillMetadata.ContextChunk(
-        index=0, request_slice=slice(0, 2), token_slice=slice(0, 20),
-        continuation_token_end=0, is_continuation=False,
+        index=0,
+        request_slice=slice(0, 2),
+        token_slice=slice(0, 20),
+        continuation_token_end=0,
+        is_continuation=False,
         num_context_tokens=386,
         query_start_loc=torch.tensor([0, 7, 20], device=device, dtype=torch.int32),
         max_query_len=13,
@@ -411,7 +414,8 @@ def test_flydsl_fp8_projection_and_fmha_graph_replay(preshuffled):
             dim=-1,
         )
         for value, expected, descale in (
-            (k8, expected_k, ks), (v8, expanded[..., 128:], vs)
+            (k8, expected_k, ks),
+            (v8, expanded[..., 128:], vs),
         ):
             error = value.double() * descale.double() - expected
             assert torch.isfinite(error).all()
@@ -421,13 +425,18 @@ def test_flydsl_fp8_projection_and_fmha_graph_replay(preshuffled):
         qf = q8.float() * qs
         kf = k8.float() * ks
         vf = v8.float() * vs
-        for qslice, kslice in ((slice(0, 7), slice(0, 129)), (slice(7, 20), slice(129, 386))):
+        for qslice, kslice in (
+            (slice(0, 7), slice(0, 129)),
+            (slice(7, 20), slice(129, 386)),
+        ):
             logits = torch.einsum("qhd,khd->hqk", qf[qslice], kf[kslice]) * SCALE
-            expected_out = torch.einsum(
-                "hqk,khd->qhd", logits.softmax(-1), vf[kslice]
+            expected_out = torch.einsum("hqk,khd->qhd", logits.softmax(-1), vf[kslice])
+            torch.testing.assert_close(
+                output[qslice].float(), expected_out, atol=2e-3, rtol=2e-3
             )
-            torch.testing.assert_close(output[qslice].float(), expected_out, atol=2e-3, rtol=2e-3)
-            torch.testing.assert_close(lse[:, qslice], logits.logsumexp(-1), atol=1e-3, rtol=0)
+            torch.testing.assert_close(
+                lse[:, qslice], logits.logsumexp(-1), atol=1e-3, rtol=0
+            )
 
     for _ in range(2):
         check(run())
@@ -448,7 +457,9 @@ def test_flydsl_fp8_native_weight_layout(default_vllm_config):
     from vllm.config.model import ModelConfig
     from vllm.config.quantization import QuantizationConfigArgs
     from vllm.model_executor.layers.linear import ColumnParallelLinear
-    from vllm.model_executor.layers.quantization.online.base import OnlineQuantizationConfig
+    from vllm.model_executor.layers.quantization.online.base import (
+        OnlineQuantizationConfig,
+    )
     from vllm.model_executor.utils import replace_parameter
     from vllm.utils.torch_utils import set_default_torch_dtype
     from vllm.v1.attention.ops.rocm_aiter_mla_fp8_prefill import (
@@ -463,8 +474,12 @@ def test_flydsl_fp8_native_weight_layout(default_vllm_config):
     )
     with set_default_torch_dtype(DTYPE), torch.device("cuda"):
         layer = ColumnParallelLinear(
-            512, 12 * 256, bias=False, params_dtype=DTYPE,
-            quant_config=quant_config, prefix="model.layers.0.self_attn.kv_b_proj",
+            512,
+            12 * 256,
+            bias=False,
+            params_dtype=DTYPE,
+            quant_config=quant_config,
+            prefix="model.layers.0.self_attn.kv_b_proj",
             disable_tp=True,
         )
         original = torch.randn(12 * 256, 512, dtype=DTYPE) * 0.02
@@ -479,12 +494,19 @@ def test_flydsl_fp8_native_weight_layout(default_vllm_config):
         k, v = project(cache, cache_scale, indices, params, 12)
         latent = cache.float()[indices.long()] * cache_scale
         expected = (latent[:, :512] @ original.float().t()).view(-1, 12, 256)
-        for value, reference in ((k[..., :128], expected[..., :128]), (v, expected[..., 128:])):
+        for value, reference in (
+            (k[..., :128], expected[..., :128]),
+            (v, expected[..., 128:]),
+        ):
             error = value.float() - reference
-            assert error.square().mean().sqrt() / reference.square().mean().sqrt() < 0.04
+            assert (
+                error.square().mean().sqrt() / reference.square().mean().sqrt() < 0.04
+            )
         torch.testing.assert_close(
-            k[..., 128:], latent[:, None, 512:].expand(-1, 12, -1).to(DTYPE),
-            rtol=0, atol=0,
+            k[..., 128:],
+            latent[:, None, 512:].expand(-1, 12, -1).to(DTYPE),
+            rtol=0,
+            atol=0,
         )
 
 
@@ -496,15 +518,23 @@ def test_flydsl_fp8_forward_scope_clears_after_error(default_vllm_config):
     )
 
     backend = AiterFlashAttnPrefillBackend(
-        12, SCALE, 512, 128, 64, 128, default_vllm_config,
+        12,
+        SCALE,
+        512,
+        128,
+        64,
+        128,
+        default_vllm_config,
     )
     q = torch.ones(1, 12, 192, device="cuda", dtype=DTYPE)
     v = torch.ones(1, 12, 128, device="cuda", dtype=DTYPE)
-    with pytest.raises(RuntimeError, match="sentinel"):
-        with backend.fp8_context_forward():
-            backend.fp8_context.prepare(q, q, v)
-            old_scale = backend.fp8_context.gather_scales.clone()
-            raise RuntimeError("sentinel")
+    with (
+        pytest.raises(RuntimeError, match="sentinel"),
+        backend.fp8_context_forward(),
+    ):
+        backend.fp8_context.prepare(q, q, v)
+        old_scale = backend.fp8_context.gather_scales.clone()
+        raise RuntimeError("sentinel")
     assert backend.fp8_context is None
     q.mul_(2)
     with backend.fp8_context_forward():

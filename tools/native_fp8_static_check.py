@@ -23,6 +23,9 @@ for path in python_files:
 results["python_ast"] = "passed"
 yaml.safe_load(pathlib.Path(".buildkite/test_areas/kernels.yaml").read_text())
 results["buildkite_yaml"] = "passed"
+proc = subprocess.run([".venv/bin/pre-commit", "run", "--files", *files], text=True, capture_output=True)
+print("pre_commit", proc.returncode, proc.stdout, proc.stderr, flush=True)
+results["pre_commit"] = {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
 payload = {"files": {p: pathlib.Path(p).read_text() for p in files}, "results": results}
 pathlib.Path("native-static-results.json").write_text(json.dumps(payload))
 with zipfile.ZipFile("native-static-files.zip", "w", zipfile.ZIP_DEFLATED) as z:

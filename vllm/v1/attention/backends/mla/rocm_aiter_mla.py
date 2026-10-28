@@ -2375,8 +2375,7 @@ class AiterMLAImpl(MLACommonImpl[AiterMLAMetadata]):
         # replicate-padded up to one (see _mla_fp8_prefill_attn).
 
         self._fp8_prefill_enabled = (
-            not self._use_flydsl_fp8_prefill
-            and _fp8_mla_prefill_supported()
+            not self._use_flydsl_fp8_prefill and _fp8_mla_prefill_supported()
         ) and (
             is_quantized_kv_cache(kv_cache_dtype)
             and AiterMLAHelper.is_valid_fp8_prefill_num_heads(self.num_heads)
@@ -2417,8 +2416,12 @@ class AiterMLAImpl(MLACommonImpl[AiterMLAMetadata]):
             or self.dcp_world_size <= 1
             or envs.VLLM_BATCH_INVARIANT
             or not _supports_fused_dcp_prefill_config(
-                self.kv_cache_dtype, act_dtype, self.kv_lora_rank,
-                self.qk_nope_head_dim, self.qk_rope_head_dim, self.v_head_dim,
+                self.kv_cache_dtype,
+                act_dtype,
+                self.kv_lora_rank,
+                self.qk_nope_head_dim,
+                self.qk_rope_head_dim,
+                self.v_head_dim,
             )
         ):
             raise ValueError(
@@ -2427,13 +2430,18 @@ class AiterMLAImpl(MLACommonImpl[AiterMLAMetadata]):
                 "512/128/64/128; batch invariance is unsupported."
             )
 
+        from inspect import signature
+
         from aiter.ops.flydsl import flydsl_flash_attn_fp8_supported
         from aiter.ops.flydsl.gather_kv_b_proj import gather_kv_b_proj_flydsl
-        from inspect import signature
 
         params = projection_weight(self.kv_b_proj, self.num_heads)
         if not flydsl_flash_attn_fp8_supported(
-            params.weight.device, self.num_heads, self.num_heads, 192, 128,
+            params.weight.device,
+            self.num_heads,
+            self.num_heads,
+            192,
+            128,
         ):
             raise ValueError("AITER FlyDSL FP8 FMHA does not support this layer.")
         if not {"k_out_scale", "v_out_scale", "weight_preshuffle"}.issubset(
@@ -2613,7 +2621,11 @@ class AiterMLAImpl(MLACommonImpl[AiterMLAMetadata]):
                 )
 
                 return compute_context(
-                    self, q, kv_c_and_k_pe_cache, attn_metadata, k_scale,
+                    self,
+                    q,
+                    kv_c_and_k_pe_cache,
+                    attn_metadata,
+                    k_scale,
                     backend.fp8_context,
                 )
         weight = getattr(self.kv_b_proj, "weight", None)
@@ -2901,8 +2913,14 @@ class AiterMLAImpl(MLACommonImpl[AiterMLAMetadata]):
             ):
                 with backend.fp8_context_forward():
                     return super().forward_mha(
-                        q, kv_c_normed, k_pe, kv_c_and_k_pe_cache, attn_metadata,
-                        k_scale, output, output_scale,
+                        q,
+                        kv_c_normed,
+                        k_pe,
+                        kv_c_and_k_pe_cache,
+                        attn_metadata,
+                        k_scale,
+                        output,
+                        output_scale,
                     )
 
         if (

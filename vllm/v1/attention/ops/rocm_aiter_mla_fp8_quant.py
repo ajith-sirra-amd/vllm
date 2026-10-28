@@ -3,6 +3,7 @@
 """Fused QKV and KV dynamic FP8 quantization and MLA descale preparation."""
 
 import torch
+
 from vllm.triton_utils import tl, triton
 
 
@@ -281,11 +282,16 @@ def fused_qkv_per_tensor_quant(q, k, v, *, k_rope=None, quantized_q=None):
     skip_q = quantized_q is not None
     if skip_q:
         cached, cached_scale = quantized_q
-        if cached.shape != q.shape or cached.device != q.device or cached.dtype != torch.float8_e4m3fn:
+        if (
+            cached.shape != q.shape
+            or cached.device != q.device
+            or cached.dtype != torch.float8_e4m3fn
+        ):
             raise ValueError("Cached FP8 Q must match this forward's Q tensor")
     outputs = tuple(
-        quantized_q[0] if i == 0 and skip_q else
-        torch.empty(shape, device=q.device, dtype=torch.float8_e4m3fn)
+        quantized_q[0]
+        if i == 0 and skip_q
+        else torch.empty(shape, device=q.device, dtype=torch.float8_e4m3fn)
         for i, shape in enumerate(output_shapes)
     )
     scales = torch.empty(5, device=q.device, dtype=torch.float32)
@@ -331,5 +337,8 @@ def fused_qkv_per_tensor_quant(q, k, v, *, k_rope=None, quantized_q=None):
         SKIP_Q=skip_q,
         num_warps=4,
     )
-    return (*outputs, quantized_q[1] if skip_q else scales[0:1],
-            *(scales[i : i + 1] for i in range(1, 5)))
+    return (
+        *outputs,
+        quantized_q[1] if skip_q else scales[0:1],
+        *(scales[i : i + 1] for i in range(1, 5)),
+    )
