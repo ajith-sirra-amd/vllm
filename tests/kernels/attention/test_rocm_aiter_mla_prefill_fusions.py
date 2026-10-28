@@ -543,3 +543,83 @@ def test_flydsl_fp8_forward_scope_clears_after_error(default_vllm_config):
         assert state.gather_scales is not None
         assert state.gather_scales[0] == 2 * old_scale[0]
     assert backend.fp8_context is None
+
+
+@requires_gfx950
+@pytest.mark.parametrize("lengths", [(17, 9), (512, 127)])
+def test_flydsl_fp8_new_tokens_causal_graph_replay(default_vllm_config, lengths):
+    """The real backend preserves causal masking, original descales, and replay."""
+    from vllm.model_executor.layers.attention.mla_attention import (
+        MLACommonPrefillMetadata,
+    )
+    from vllm.v1.attention.backends.mla.prefill.aiter_flash_attn import (
+        AiterFlashAttnPrefillBackend,
+    )
+
+    from vllm.v1.attention.ops.rocm_aiter_mla_fp8_quant import (
+        fused_qkv_per_tensor_quant,
+    )
+
+    torch.manual_seed(31)
+    heads = 12
+    tokens = sum(lengths)
+    offsets = [0]
+    for length in lengths:
+        offsets.append(offsets[-1] + length)
+    metadata = MLACommonPrefillMetadata(
+        block_table=torch.empty(len(lengths), 0, device="cuda", dtype=torch.int32),
+        query_start_loc=torch.tensor(offsets, device="cuda", dtype=torch.int32),
+        max_query_len=max(lengths),
+        q_data_type=DTYPE,
+        output_dtype=DTYPE,
+    )
+    backend = AiterFlashAttnPrefillBackend(
+        heads, SCALE, 512, 128, 64, 128, default_vllm_config
+    )
+    backend.prepare_metadata(metadata)
+    q = torch.randn(tokens, heads, 384, device="cuda", dtype=DTYPE)[..., ::2]
+    kv = torch.randn(tokens, heads, 320, device="cuda", dtype=DTYPE)
+    k, v = kv[..., :192], kv[..., 192:]
+    k.mul_(1.5)
+    v.mul_(0.25)
+    buffer = torch.empty(tokens, heads, 128, device="cuda", dtype=DTYPE)
+
+    def run():
+        with backend.fp8_context_forward():
+            output, lse = backend.run_prefill_new_tokens(q, k, v, True)
+        assert backend.fp8_context is None
+        return output, lse
+
+    def check(output, lse):
+        quantized = fused_qkv_per_tensor_quant(q, k, v)
+        rounded_v = (quantized[2].float() * quantized[5]).to(DTYPE)
+        assert torch.any(rounded_v[offsets[:-1]] != v[offsets[:-1]])
+        for begin, end in zip(offsets[:-1], offsets[1:]):
+            # A causal sequence's first output is exactly its quantized V.
+            # BF16 fallback returns the original V and fails this assertion.
+            torch.testing.assert_close(output[begin], rounded_v[begin], atol=0, rtol=0)
+            qf, kf, vf = (x[begin:end].double() for x in (q, k, v))
+            logits = torch.einsum("qhd,khd->hqk", qf, kf) * SCALE
+            mask = torch.ones(end - begin, end - begin, device="cuda", dtype=torch.bool)
+            logits.masked_fill_(mask.triu(1), -torch.inf)
+            reference = torch.einsum("hqk,khd->qhd", logits.softmax(-1), vf)
+            error = output[begin:end].double() - reference
+            assert torch.isfinite(error).all()
+            assert error.square().mean().sqrt() / reference.square().mean().sqrt() < 0.10
+            assert (lse[:, begin:end].double() - logits.logsumexp(-1)).abs().max() < 0.20
+
+    for _ in range(2):
+        check(*run())
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = run()
+    q.mul_(0.5)
+    k.mul_(1.5)
+    v.mul_(0.75)
+    graph.replay()
+    check(*captured)
+    with backend.fp8_context_forward():
+        no_lse = backend.run_prefill_new_tokens(q, k, v, False, out=buffer)
+    assert isinstance(no_lse, torch.Tensor)
+    assert no_lse.data_ptr() == buffer.data_ptr()
+    torch.testing.assert_close(no_lse, captured[0], atol=2e-3, rtol=2e-3)

@@ -163,12 +163,15 @@ class FP8PrefillContext:
         self.queries: dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
         self.gather_scales: torch.Tensor | None = None
 
-    def prepare(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> None:
+    def prepare(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+    ) -> tuple[torch.Tensor, ...]:
         with torch.accelerator.device_index(q.device.index):
             quant = fused_qkv_per_tensor_quant(q, k, v)
             key = (q.data_ptr(), tuple(q.shape), tuple(q.stride()))
             self.queries[key] = (quant[0], quant[3])
             self.gather_scales = torch.cat((quant[6], quant[7]))
+            return quant
 
     def run(
         self,

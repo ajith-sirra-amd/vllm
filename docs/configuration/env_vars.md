@@ -10,7 +10,7 @@ vLLM uses the following environment variables to configure the system:
 ## ROCm FlyDSL FP8 MLA prefill
 
 Set `VLLM_ROCM_USE_AITER_FLYDSL_FP8_PREFILL_ATTN=1` to opt in to direct
-FP8 K/V projection and cached-context attention on MI355X (gfx950).
+FP8 K/V projection and attention on MI355X (gfx950).
 The default is `0`.
 
 This path requires `ROCM_AITER_MLA` with `ROCM_AITER_FA` prefill,
@@ -44,9 +44,12 @@ Batch invariance is unsupported. Other prefill backends do not use this path.
 Cached chunks use FP8 FMHA when the maximum query length is at least 512 and
 the maximum context length is at least 8192. Smaller chunks retain BF16
 attention. Calls exceeding the kernels' 32-bit indexing limits use the
-standard path. Opting in also uses BF16 attention for new-token causal prefill,
-bypassing ASM prefill and its metadata allocation on the target model.
-Speculative draft models retain their existing attention routing.
+standard path. Forwards that prepare FP8 Q/K/V for eligible cached chunks reuse
+those tensors for new-token causal FP8 attention, with their original descales.
+The cached projection retains separate output descales with factor-of-two headroom.
+Forwards without this preparation retain BF16 causal attention. Opting in bypasses
+target-model ASM prefill and its metadata allocation. Speculative draft models
+retain their existing attention routing.
 
 The context projection consumes compressed FP8 cache and FP8 weights directly,
 with FP32 accumulation, and writes FP8 K/V without a BF16 intermediate.

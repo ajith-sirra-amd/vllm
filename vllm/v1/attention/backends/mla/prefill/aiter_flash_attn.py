@@ -113,7 +113,31 @@ class AiterFlashAttnPrefillBackend(MLAPrefillBackend):
             "AiterFlashAttnPrefillBackend does not support fused quantized output."
         )
         if self.fp8_context is not None:
-            self.fp8_context.prepare(q, k, v)
+            quant = self.fp8_context.prepare(q, k, v)
+            if (
+                q.shape == k.shape
+                and q.shape[:2] == v.shape[:2]
+                and q.shape[0] > 0
+                and max(x.numel() for x in (q, k, v)) < 2**31
+            ):
+                # Reuse prepared Q/K/V with their original descales. Cached KV
+                # projection has separate output descales with 2x headroom.
+                return self.fp8_context.attention(
+                    *quant[:3],
+                    softmax_scale=self.scale,
+                    cu_seqlens_q=self._prefill_metadata.query_start_loc,
+                    cu_seqlens_kv=self._prefill_metadata.query_start_loc,
+                    max_seqlen_q=self._prefill_metadata.max_query_len,
+                    max_seqlen_kv=self._prefill_metadata.max_query_len,
+                    cross_seqlen=True,
+                    causal=True,
+                    return_lse=return_softmax_lse,
+                    q_descale=quant[3],
+                    k_descale=quant[4],
+                    v_descale=quant[5],
+                    out=out,
+                    stream=None,
+                )
         result = self.flash_attn_varlen_func(
             q=q,
             k=k,

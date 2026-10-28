@@ -1336,7 +1336,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ROCM_USE_AITER_MLA": lambda: (
         os.getenv("VLLM_ROCM_USE_AITER_MLA", "True").lower() in ("true", "1")
     ),
-    # Opt in to direct FP8 kv_b_proj output and FlyDSL cached-context FMHA.
+    # Opt in to direct FP8 kv_b_proj output and prepared-QKV FlyDSL FMHA.
     # Requires gfx950, DCP > 1, FP8 E4M3 KV cache, BF16 activations,
     # ROCM_AITER_FA prefill and native fp8_per_channel kv_b_proj weights.
     # Causal and small-context attention remain BF16. Disabled by default.
