@@ -510,6 +510,7 @@ def test_flydsl_fp8_native_weight_layout(default_vllm_config):
         )
 
 
+
 @requires_gfx950
 def test_flydsl_fp8_forward_scope_clears_after_error(default_vllm_config):
     """An exception cannot leave Q or descales alive on a shared backend."""
@@ -518,26 +519,22 @@ def test_flydsl_fp8_forward_scope_clears_after_error(default_vllm_config):
     )
 
     backend = AiterFlashAttnPrefillBackend(
-        12,
-        SCALE,
-        512,
-        128,
-        64,
-        128,
-        default_vllm_config,
+        12, SCALE, 512, 128, 64, 128, default_vllm_config,
     )
     q = torch.ones(1, 12, 192, device="cuda", dtype=DTYPE)
     v = torch.ones(1, 12, 128, device="cuda", dtype=DTYPE)
     with (
         pytest.raises(RuntimeError, match="sentinel"),
-        backend.fp8_context_forward(),
+        backend.fp8_context_forward() as state,
     ):
-        backend.fp8_context.prepare(q, q, v)
-        old_scale = backend.fp8_context.gather_scales.clone()
+        state.prepare(q, q, v)
+        assert state.gather_scales is not None
+        old_scale = state.gather_scales.clone()
         raise RuntimeError("sentinel")
     assert backend.fp8_context is None
     q.mul_(2)
-    with backend.fp8_context_forward():
-        backend.fp8_context.prepare(q, q, v)
-        assert backend.fp8_context.gather_scales[0] == 2 * old_scale[0]
+    with backend.fp8_context_forward() as state:
+        state.prepare(q, q, v)
+        assert state.gather_scales is not None
+        assert state.gather_scales[0] == 2 * old_scale[0]
     assert backend.fp8_context is None

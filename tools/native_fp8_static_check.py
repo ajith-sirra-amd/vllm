@@ -31,5 +31,5 @@ pathlib.Path("native-static-results.json").write_text(json.dumps(payload))
 with zipfile.ZipFile("native-static-files.zip", "w", zipfile.ZIP_DEFLATED) as z:
     for path in files:
         z.write(path)
-if results["ruff_check"]["exit_code"] or results["ruff_format_check"]["exit_code"]:
+if results["ruff_check"]["exit_code"] or results["ruff_format_check"]["exit_code"] or results["pre_commit"]["exit_code"]:
     raise SystemExit(1)

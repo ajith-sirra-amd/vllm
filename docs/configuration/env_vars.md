@@ -59,7 +59,6 @@ This is an experimental numerical path: cached values can exceed the
 new-token-derived range and saturate. Validate model accuracy and performance
 on the intended workload before enabling it in production.
 
-
 ```python
 --8<-- "vllm/envs.py:env-vars-definition"
 ```

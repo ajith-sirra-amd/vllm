@@ -86,7 +86,7 @@ class AiterFlashAttnPrefillBackend(MLAPrefillBackend):
         self.fp8_context: FP8PrefillContext | None = None
 
     @contextmanager
-    def fp8_context_forward(self) -> Iterator[None]:
+    def fp8_context_forward(self) -> Iterator["FP8PrefillContext"]:
         from vllm.v1.attention.ops.rocm_aiter_mla_fp8_prefill import (
             FP8PrefillContext,
         )
@@ -95,7 +95,7 @@ class AiterFlashAttnPrefillBackend(MLAPrefillBackend):
             raise RuntimeError("Nested FP8 prefill forward scopes are unsupported.")
         self.fp8_context = FP8PrefillContext()
         try:
-            yield
+            yield self.fp8_context
         finally:
             # Prefill metadata/backends can be shared across layers and forwards.
             self.fp8_context = None

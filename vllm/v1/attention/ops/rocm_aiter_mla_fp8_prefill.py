@@ -114,7 +114,7 @@ def project(gathered, cache_scale, indices, params, heads, output_scales=None):
     if not gathered.is_cuda or any(t.device != gathered.device for t in tensors):
         raise ValueError("All projection tensors must share a GPU")
     dtype = torch.bfloat16 if output_scales is None else torch.float8_e4m3fn
-    with torch.cuda.device(gathered.device):
+    with torch.accelerator.device_index(gathered.device.index):
         k = torch.empty(
             (indices.numel(), heads, 192), device=gathered.device, dtype=dtype
         )
@@ -164,7 +164,7 @@ class FP8PrefillContext:
         self.gather_scales: torch.Tensor | None = None
 
     def prepare(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> None:
-        with torch.cuda.device(q.device):
+        with torch.accelerator.device_index(q.device.index):
             quant = fused_qkv_per_tensor_quant(q, k, v)
             key = (q.data_ptr(), tuple(q.shape), tuple(q.stride()))
             self.queries[key] = (quant[0], quant[3])
@@ -177,7 +177,7 @@ class FP8PrefillContext:
         kv8: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
         scale: float,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        with torch.cuda.device(q.device):
+        with torch.accelerator.device_index(q.device.index):
             key = (q.data_ptr(), tuple(q.shape), tuple(q.stride()))
             cached = self.queries.get(key)
             if cached is None:
