@@ -7,7 +7,7 @@ import yaml
 
 NATIVE_SHA = "492080779e9feea19308092b0aba0840e87c6115"
 files = ["vllm/models/kimi_k3/nvidia/dspark_mla.py", "vllm/v1/attention/ops/rocm_aiter_mla_prefill.py", "vllm/v1/attention/ops/rocm_aiter_mla_fp8_quant.py", "vllm/v1/attention/ops/rocm_aiter_mla_fp8_prefill.py", "vllm/v1/attention/backends/mla/rocm_aiter_mla.py", "vllm/v1/attention/backends/mla/prefill/aiter_flash_attn.py", "vllm/envs.py", "tests/kernels/attention/test_rocm_aiter_mla_prefill_fusions.py", ".buildkite/test_areas/kernels.yaml", "docs/configuration/env_vars.md"]
-python_files = ["vllm/models/kimi_k3/nvidia/dspark_mla.py", "vllm/v1/attention/ops/rocm_aiter_mla_prefill.py", f for f in files if f.endswith(".py")]
+python_files = [f for f in files if f.endswith(".py")]
 results = {}
 for label, command in [
     ("ruff_check", [".venv/bin/ruff", "check", *python_files]),
