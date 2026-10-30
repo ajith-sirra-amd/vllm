@@ -1,0 +1,32 @@
+name: Native FP8 exact PR static checks
+on:
+  push:
+    branches:
+      - checks/fp8-native-tests-332d6c9
+permissions:
+  contents: read
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.6"
+      - name: Prepare Python
+        run: |
+          uv venv --python 3.12
+          uv pip install ruff==0.14.0 pyyaml
+          uv pip install -r requirements/lint.txt
+      - name: Validate exact native patch
+        run: .venv/bin/python tools/native_fp8_static_check.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-fp8-static
+          path: |
+            native-static-results.json
+            native-static-files.zip
