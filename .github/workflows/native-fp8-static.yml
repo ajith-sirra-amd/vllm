@@ -2,7 +2,7 @@ name: Native FP8 exact PR static checks
 on:
   push:
     branches:
-      - checks/fp8-native-tests-4920807
+      - checks/pr64288-rendered-docs-20261102
 permissions:
   contents: read
 jobs:
@@ -30,3 +30,34 @@ jobs:
           path: |
             native-static-results.json
             native-static-files.zip
+
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.6"
+      - name: Install documented docs dependencies
+        run: |
+          uv venv --python 3.12
+          uv pip install -r requirements/docs.txt
+      - name: Render docs with strict warnings
+        run: .venv/bin/mkdocs build --strict
+      - name: Verify FP8 usage section rendered
+        run: |
+          .venv/bin/python - <<'PY'
+          from pathlib import Path
+          html = Path("site/configuration/env_vars/index.html").read_text()
+          for text in ("rocm-flydsl-fp8-mla-prefill", "VLLM_ROCM_USE_AITER_FLYDSL_FP8_PREFILL_ATTN", "kv_b_proj", "fp8_per_channel"):
+              assert text in html, text
+          print("FP8 documentation anchor and configuration rendered")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr64288-rendered-docs
+          path: site/configuration/env_vars/
