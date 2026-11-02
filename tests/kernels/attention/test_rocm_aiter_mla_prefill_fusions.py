@@ -344,7 +344,8 @@ def test_flydsl_fp8_quantization_strides_and_zero(tokens):
 
 @requires_gfx950
 @pytest.mark.parametrize("preshuffled", [False, True])
-def test_flydsl_fp8_projection_and_fmha_graph_replay(preshuffled):
+@pytest.mark.parametrize("reference_query_reuse", [False, True])
+def test_flydsl_fp8_projection_and_fmha_graph_replay(preshuffled, reference_query_reuse):
     """Check row selection, FP8 output, descales/LSE, and changed graph inputs."""
     from aiter.ops.shuffle import shuffle_weight
 
@@ -393,13 +394,38 @@ def test_flydsl_fp8_projection_and_fmha_graph_replay(preshuffled):
         all_rows_active=True,
     )
 
+    if reference_query_reuse:
+        from vllm.v1.attention.backends.mla.prefill.aiter_flydsl_fp8 import (
+            AiterFlyDSLFP8PrefillBackend,
+        )
+
+        backend = AiterFlyDSLFP8PrefillBackend(
+            heads, SCALE, 512, 128, 64, 128,
+            SimpleNamespace(model_config=SimpleNamespace(dtype=DTYPE)),
+        )
+
     def run():
-        state = FP8PrefillContext()
-        state.prepare(q, new_k, new_v)
-        kv8 = project(cache, cache_scale, indices, params, heads, state.gather_scales)
-        output, lse = state.run(chunk, q, kv8, SCALE)
-        key = (q.data_ptr(), tuple(q.shape), tuple(q.stride()))
-        q8, qs = state.queries[key]
+        if reference_query_reuse:
+            backend.prepare_metadata(SimpleNamespace(
+                query_start_loc=chunk.query_start_loc,
+                max_query_len=chunk.max_query_len,
+            ))
+            with backend.fp8_context_forward() as state:
+                backend.run_prefill_new_tokens(q, new_k, new_v, True)
+                kv8 = project(
+                    cache, cache_scale, indices, params, heads, state.gather_scales
+                )
+                output, lse = state.run(chunk, q, kv8, SCALE)
+                assert state.query_provider is not None
+                _, q8, qs = backend._q_fp8
+            assert backend.fp8_context is None
+        else:
+            state = FP8PrefillContext()
+            state.prepare(q, new_k, new_v)
+            kv8 = project(cache, cache_scale, indices, params, heads, state.gather_scales)
+            output, lse = state.run(chunk, q, kv8, SCALE)
+            key = (q.data_ptr(), tuple(q.shape), tuple(q.stride()))
+            q8, qs = state.queries[key]
         return output, lse, q8, qs, kv8
 
     def check(result):
