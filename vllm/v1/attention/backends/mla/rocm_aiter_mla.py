@@ -41,6 +41,9 @@ from vllm.v1.attention.backend import (
 from vllm.v1.attention.backends.mla.prefill.aiter_flash_attn import (
     AiterFlashAttnPrefillBackend,
 )
+from vllm.v1.attention.backends.mla.prefill.aiter_flydsl_fp8 import (
+    AiterFlyDSLFP8PrefillBackend,
+)
 from vllm.v1.attention.backends.mla.triton_mla import _compute_num_kv_splits
 from vllm.v1.attention.backends.utils import (
     get_dcp_local_seq_lens,
@@ -150,6 +153,10 @@ def _fp8_mla_prefill_supported() -> bool:
     except Exception:  # noqa: BLE001
         return False
     return True
+
+
+def _asm_fp8_prefill_superseded(prefill_backend: object) -> bool:
+    return isinstance(prefill_backend, AiterFlyDSLFP8PrefillBackend)
 
 
 @functools.lru_cache(maxsize=1)
@@ -1056,6 +1063,7 @@ class AiterMLAMetadataBuilder(MLACommonMetadataBuilder[AiterMLAMetadata]):
             kv_cache_dtype_str == "fp8"
             and vllm_config.model_config.dtype == torch.bfloat16
             and AiterMLAHelper.is_valid_fp8_prefill_num_heads(self.num_heads)
+            and not _asm_fp8_prefill_superseded(self._prefill_backend)
         )
         if self._fp8_prefill_enabled:
             max_prefill_qlen = min(
@@ -2932,6 +2940,8 @@ class AiterMLAImpl(MLACommonImpl[AiterMLAMetadata]):
         if (
             not self._fp8_prefill_enabled
             or not isinstance(attn_metadata, AiterMLAMetadata)
+            or attn_metadata.prefill is None
+            or _asm_fp8_prefill_superseded(attn_metadata.prefill.prefill_backend)
             or attn_metadata.fp8_prefill_qo_indptr is None
         ):
             return super().forward_mha(

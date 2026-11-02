@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Direct FP8 projection and cached-context attention for ROCm MLA."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -162,6 +163,9 @@ class FP8PrefillContext:
         self.attention = flydsl_flash_attn_fp8_func
         self.queries: dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
         self.gather_scales: torch.Tensor | None = None
+        self.query_provider: Callable[..., tuple[torch.Tensor, torch.Tensor]] | None = (
+            None
+        )
 
     def prepare(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> None:
         with torch.accelerator.device_index(q.device.index):
@@ -178,14 +182,17 @@ class FP8PrefillContext:
         scale: float,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         with torch.accelerator.device_index(q.device.index):
-            key = (q.data_ptr(), tuple(q.shape), tuple(q.stride()))
-            cached = self.queries.get(key)
-            if cached is None:
-                # Quantize each distinct slice independently, as in the prototype.
-                quant = fused_qkv_per_tensor_quant(q, q[:0], q[:0, :, :128])
-                cached = quant[0], quant[3]
-                self.queries[key] = cached
-            q8, qs = cached
+            if self.query_provider is not None:
+                q8, qs = self.query_provider(chunk, q)
+            else:
+                key = (q.data_ptr(), tuple(q.shape), tuple(q.stride()))
+                cached = self.queries.get(key)
+                if cached is None:
+                    # Quantize each distinct slice independently, as in the prototype.
+                    quant = fused_qkv_per_tensor_quant(q, q[:0], q[:0, :, :128])
+                    cached = quant[0], quant[3]
+                    self.queries[key] = cached
+                q8, qs = cached
             k8, v8, ks, vs = kv8
             return self.attention(
                 q8,
