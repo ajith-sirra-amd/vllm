@@ -395,9 +395,7 @@ def test_flydsl_fp8_projection_and_fmha_graph_replay(preshuffled):
 
     def run():
         state = FP8PrefillContext()
-        kv8 = state.project(
-            q, cache, cache_scale, indices, params, heads, weight_norms
-        )
+        kv8 = state.project(q, cache, cache_scale, indices, params, heads, weight_norms)
         output, lse = state.run(chunk, q, kv8, SCALE)
         key = (q.data_ptr(), tuple(q.shape), tuple(q.stride()))
         q8, qs = state.queries[key]
@@ -560,9 +558,7 @@ def test_flydsl_fp8_cached_outliers(preshuffled, multiplier):
 
     torch.manual_seed(71)
     heads = 12
-    weight = (torch.randn(heads * 256, 512, device="cuda") * 32).to(
-        torch.float8_e4m3fn
-    )
+    weight = (torch.randn(heads * 256, 512, device="cuda") * 32).to(torch.float8_e4m3fn)
     weight_scale = torch.linspace(0.0002, 0.0008, heads * 256, device="cuda")
     params = ProjectionWeight(
         shuffle_weight(weight, (16, 16)) if preshuffled else weight,

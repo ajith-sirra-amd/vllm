@@ -87,16 +87,12 @@ def projection_weight(layer: torch.nn.Module, heads: int) -> ProjectionWeight:
     return ProjectionWeight(weight, scale.view(-1), preshuffled)
 
 
-
 def projection_weight_norms(params: ProjectionWeight, heads: int) -> torch.Tensor:
     """Compute K/V row-norm maxima once from the native FP8 weight storage."""
     weight = params.weight.float()
     if params.preshuffled:
         row_squares = (
-            weight.view(heads * 16, 16, 2, 16, 16)
-            .square()
-            .sum((1, 2, 4))
-            .reshape(-1)
+            weight.view(heads * 16, 16, 2, 16, 16).square().sum((1, 2, 4)).reshape(-1)
         )
     else:
         row_squares = weight.square().sum(-1)

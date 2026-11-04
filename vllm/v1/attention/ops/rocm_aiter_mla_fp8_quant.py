@@ -107,15 +107,22 @@ def _quant_tensor(
 
 
 @triton.jit
-def _cache_bound_partials(Cache, Indices, Partial, ROWS: tl.constexpr,
-                          BLOCK_ROWS: tl.constexpr, BLOCK_COLS: tl.constexpr):
+def _cache_bound_partials(
+    Cache,
+    Indices,
+    Partial,
+    ROWS: tl.constexpr,
+    BLOCK_ROWS: tl.constexpr,
+    BLOCK_COLS: tl.constexpr,
+):
     block = tl.program_id(0)
     rows = block * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
     cols = tl.arange(0, BLOCK_COLS)
     indices = tl.load(Indices + rows, rows < ROWS, other=0).to(tl.int64)
     x = tl.load(
         Cache + indices[:, None] * 576 + cols[None, :],
-        (rows[:, None] < ROWS) & (cols[None, :] < 576), other=0.0,
+        (rows[:, None] < ROWS) & (cols[None, :] < 576),
+        other=0.0,
     ).to(tl.float32)
     norm_sq = tl.sum(tl.where(cols[None, :] < 512, x * x, 0), 1)
     rope = tl.max(tl.where(cols[None, :] >= 512, tl.abs(x), 0), 1)
@@ -124,8 +131,9 @@ def _cache_bound_partials(Cache, Indices, Partial, ROWS: tl.constexpr,
 
 
 @triton.jit
-def _cache_bound_reduce(Partial, WeightNorms, CacheScale, Output,
-                        PARTS: tl.constexpr, BLOCK: tl.constexpr):
+def _cache_bound_reduce(
+    Partial, WeightNorms, CacheScale, Output, PARTS: tl.constexpr, BLOCK: tl.constexpr
+):
     offsets = tl.arange(0, BLOCK)
     squares = tl.load(Partial + offsets * 2, offsets < PARTS, other=0)
     rope = tl.load(Partial + offsets * 2 + 1, offsets < PARTS, other=0)
@@ -144,10 +152,19 @@ def _cache_bound_reduce(Partial, WeightNorms, CacheScale, Output,
 
 @triton.jit
 def _q_and_cache_partials(
-    Q, QPartial, Cache, Indices, CachePartial, NQ, ROWS: tl.constexpr,
-    SHAPE: tl.constexpr, STRIDE: tl.constexpr,
-    QPARTS: tl.constexpr, QBLOCK: tl.constexpr,
-    BLOCK_ROWS: tl.constexpr, BLOCK_COLS: tl.constexpr,
+    Q,
+    QPartial,
+    Cache,
+    Indices,
+    CachePartial,
+    NQ,
+    ROWS: tl.constexpr,
+    SHAPE: tl.constexpr,
+    STRIDE: tl.constexpr,
+    QPARTS: tl.constexpr,
+    QBLOCK: tl.constexpr,
+    BLOCK_ROWS: tl.constexpr,
+    BLOCK_COLS: tl.constexpr,
 ):
     program = tl.program_id(0)
     if program < QPARTS:
@@ -159,7 +176,8 @@ def _q_and_cache_partials(
         indices = tl.load(Indices + rows, rows < ROWS, other=0).to(tl.int64)
         x = tl.load(
             Cache + indices[:, None] * 576 + cols[None, :],
-            (rows[:, None] < ROWS) & (cols[None, :] < 576), other=0.0,
+            (rows[:, None] < ROWS) & (cols[None, :] < 576),
+            other=0.0,
         ).to(tl.float32)
         squares = tl.sum(tl.where(cols[None, :] < 512, x * x, 0), 1)
         rope = tl.max(tl.where(cols[None, :] >= 512, tl.abs(x), 0), 1)
@@ -169,19 +187,42 @@ def _q_and_cache_partials(
 
 @triton.jit
 def _q_quant_and_cache_reduce(
-    Q, Q8, QPartial, QScale, CachePartial, WeightNorms, CacheScale, OutputScales,
-    NQ, SHAPE: tl.constexpr, STRIDE: tl.constexpr,
-    QPARTS: tl.constexpr, QBLOCK: tl.constexpr,
-    CACHE_PARTS: tl.constexpr, CACHE_BLOCK: tl.constexpr,
+    Q,
+    Q8,
+    QPartial,
+    QScale,
+    CachePartial,
+    WeightNorms,
+    CacheScale,
+    OutputScales,
+    NQ,
+    SHAPE: tl.constexpr,
+    STRIDE: tl.constexpr,
+    QPARTS: tl.constexpr,
+    QBLOCK: tl.constexpr,
+    CACHE_PARTS: tl.constexpr,
+    CACHE_BLOCK: tl.constexpr,
 ):
     _quant_tensor(
-        Q, Q8, QPartial, QScale, NQ, SHAPE, STRIDE,
-        QPARTS, QBLOCK, False,
+        Q,
+        Q8,
+        QPartial,
+        QScale,
+        NQ,
+        SHAPE,
+        STRIDE,
+        QPARTS,
+        QBLOCK,
+        False,
     )
     if tl.program_id(0) == 0:
         _cache_bound_reduce(
-            CachePartial, WeightNorms, CacheScale, OutputScales,
-            CACHE_PARTS, CACHE_BLOCK,
+            CachePartial,
+            WeightNorms,
+            CacheScale,
+            OutputScales,
+            CACHE_PARTS,
+            CACHE_BLOCK,
         )
 
 
@@ -222,20 +263,38 @@ def quantize_query(q: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     _validate_query(q)
     n = q.numel()
     single = n <= 8192
-    block = (max(256, triton.next_power_of_2(n)) if single
-             else (8192 if n >= 4 * 1024 * 1024 else 4096))
+    block = (
+        max(256, triton.next_power_of_2(n))
+        if single
+        else (8192 if n >= 4 * 1024 * 1024 else 4096)
+    )
     parts = min(128, triton.next_power_of_2(triton.cdiv(n, block))) if n else 1
     partial = torch.empty(parts, device=q.device, dtype=torch.float32)
     scale = torch.empty(1, device=q.device, dtype=torch.float32)
     output = torch.empty(q.shape, device=q.device, dtype=torch.float8_e4m3fn)
     if not single:
         _partial_amax[(parts,)](
-            q, partial, n, tuple(q.shape[1:]), q.stride(), parts, block,
+            q,
+            partial,
+            n,
+            tuple(q.shape[1:]),
+            q.stride(),
+            parts,
+            block,
             num_warps=4,
         )
     _quant_tensor[(max(1, triton.cdiv(n, block)),)](
-        q, output, partial, scale, n, tuple(q.shape[1:]), q.stride(),
-        parts, block, single, num_warps=4,
+        q,
+        output,
+        partial,
+        scale,
+        n,
+        tuple(q.shape[1:]),
+        q.stride(),
+        parts,
+        block,
+        single,
+        num_warps=4,
     )
     return output, scale
 
@@ -250,11 +309,22 @@ def cached_kv_scales(cache, cache_scale, indices, weight_norms):
     partial = torch.empty((parts, 2), device=cache.device, dtype=torch.float32)
     output = torch.empty(2, device=cache.device, dtype=torch.float32)
     _cache_bound_partials[(parts,)](
-        cache, indices, partial, rows, 16, 1024, num_warps=4,
+        cache,
+        indices,
+        partial,
+        rows,
+        16,
+        1024,
+        num_warps=4,
     )
     _cache_bound_reduce[(1,)](
-        partial, weight_norms, cache_scale, output, parts,
-        triton.next_power_of_2(parts), num_warps=4,
+        partial,
+        weight_norms,
+        cache_scale,
+        output,
+        parts,
+        triton.next_power_of_2(parts),
+        num_warps=4,
     )
     return output
 
@@ -275,15 +345,37 @@ def prepare_fp8_context(q, cache, cache_scale, indices, weight_norms):
     cscales = torch.empty(2, device=q.device, dtype=torch.float32)
     q8 = torch.empty(q.shape, device=q.device, dtype=torch.float8_e4m3fn)
     _q_and_cache_partials[(qparts + cparts,)](
-        q, qpartial, cache, indices, cpartial, n, indices.numel(),
-        tuple(q.shape[1:]), q.stride(), qparts, block, 16, 1024,
+        q,
+        qpartial,
+        cache,
+        indices,
+        cpartial,
+        n,
+        indices.numel(),
+        tuple(q.shape[1:]),
+        q.stride(),
+        qparts,
+        block,
+        16,
+        1024,
         num_warps=4,
     )
     _q_quant_and_cache_reduce[(max(1, triton.cdiv(n, block)),)](
-        q, q8, qpartial, qscale, cpartial, weight_norms, cache_scale, cscales,
-        n, tuple(q.shape[1:]), q.stride(), qparts, block,
-        cparts, triton.next_power_of_2(cparts), num_warps=4,
+        q,
+        q8,
+        qpartial,
+        qscale,
+        cpartial,
+        weight_norms,
+        cache_scale,
+        cscales,
+        n,
+        tuple(q.shape[1:]),
+        q.stride(),
+        qparts,
+        block,
+        cparts,
+        triton.next_power_of_2(cparts),
+        num_warps=4,
     )
     return q8, qscale, cscales
-
-

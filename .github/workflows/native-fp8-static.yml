@@ -1,14 +1,13 @@
-name: Native cached-scale integration checks
+name: Native cached-scale exact source verification
 on:
   push:
-    branches:
-      - checks/pr64288-asm-static-20261104
+    branches: [checks/pr64288-asm-static-20261104]
 permissions:
   contents: read
 jobs:
   static:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -17,18 +16,12 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.9.6"
-      - name: Prepare Python tools
+      - name: Verify native files match the completed static checks
         run: |
           uv venv --python 3.12
-          uv pip install ruff==0.14.0
-          uv pip install -r requirements/lint.txt
-          .venv/bin/pre-commit install
-      - name: Format candidate and run static checks
-        run: .venv/bin/python tools/native_cache_scale_prepare.py
+          .venv/bin/python tools/native_cache_scale_exact.py
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: native-cache-scale-preparation
-          path: |
-            native-cache-scale-preparation.json
-            native-cache-scale-files.zip
+          name: native-cache-scale-exact-source
+          path: native-cache-scale-exact.json
