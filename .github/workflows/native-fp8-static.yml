@@ -1,27 +1,64 @@
-name: Native cached-scale exact source verification
+name: Native FP8 rendered documentation
 on:
   push:
     branches: [checks/pr64288-asm-static-20261104]
+    paths: [.github/workflows/native-fp8-static.yml]
 permissions:
   contents: read
 jobs:
-  static:
+  rendered-docs:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
+    env:
+      READTHEDOCS_CANONICAL_URL: https://docs.vllm.ai/en/latest/
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          ref: cbf7d1dc1c83bdf6e19dafe849c5fee42943f2ce
+          fetch-depth: 0
           persist-credentials: false
-          fetch-depth: 2
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.9.6"
-      - name: Verify native files match the completed static checks
+      - name: Render native candidate documentation
         run: |
           uv venv --python 3.12
-          .venv/bin/python tools/native_cache_scale_exact.py
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+          uv pip install --require-hashes -r requirements/docs.txt
+          mkdir -p review-docs-evidence
+          git rev-parse HEAD > review-docs-evidence/source-sha.txt
+          set -o pipefail
+          .venv/bin/python -m mkdocs build --strict --site-dir review-docs-site 2>&1 | tee review-docs-evidence/build.log
+      - name: Verify generated feature documentation
+        run: |
+          .venv/bin/python - <<'PY'
+          import json
+          from html.parser import HTMLParser
+          from pathlib import Path
+          class Text(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.parts = []
+              def handle_data(self, data):
+                  self.parts.append(data)
+          page = Path("review-docs-site/configuration/env_vars/index.html")
+          parser = Text()
+          parser.feed(page.read_text())
+          text = " ".join(parser.parts)
+          flag = "VLLM_ROCM_USE_AITER_FLYDSL_FP8_PREFILL_ATTN"
+          assert flag in text
+          start = text.find(flag)
+          evidence = {"source": Path("review-docs-evidence/source-sha.txt").read_text().strip(),
+                      "page": str(page), "excerpt": text[max(0, start-300):start+6500]}
+          Path("review-docs-evidence/rendered-excerpt.json").write_text(json.dumps(evidence, indent=2))
+          print(json.dumps(evidence))
+          PY
+      - name: Upload rendered documentation evidence
         if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: native-cache-scale-exact-source
-          path: native-cache-scale-exact.json
+          name: native-fp8-rendered-docs
+          path: |
+            review-docs-evidence/
+            review-docs-site/configuration/env_vars/
+            review-docs-site/search/search_index.json
+          if-no-files-found: error
