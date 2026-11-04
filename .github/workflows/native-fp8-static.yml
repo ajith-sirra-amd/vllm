@@ -1,4 +1,4 @@
-name: Native FP8 rendered documentation
+name: Native FP8 checks on pinned upstream main
 on:
   push:
     branches: [checks/pr64288-asm-static-20261104]
@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: cbf7d1dc1c83bdf6e19dafe849c5fee42943f2ce
+          ref: a03796b8e3bfe536e22f9db741109dbf80170079
           fetch-depth: 0
           persist-credentials: false
       - uses: astral-sh/setup-uv@v6
@@ -61,4 +61,36 @@ jobs:
             review-docs-evidence/
             review-docs-site/configuration/env_vars/
             review-docs-site/search/search_index.json
+          if-no-files-found: error
+
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: a03796b8e3bfe536e22f9db741109dbf80170079
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.6"
+      - name: Check candidate against pinned main
+        run: |
+          uv venv --python 3.12
+          uv pip install -r requirements/lint.txt
+          .venv/bin/pre-commit install
+          mkdir -p review-static-evidence
+          git rev-parse HEAD > review-static-evidence/source-sha.txt
+          git diff --name-only 69d27bf8002a4634de1699c95fb0aeb22fb86ca5 HEAD > review-static-evidence/changed-files.txt
+          mapfile -t changed < review-static-evidence/changed-files.txt
+          set -o pipefail
+          .venv/bin/pre-commit run --files "${changed[@]}" 2>&1 | tee review-static-evidence/pre-commit.log
+          git diff --exit-code
+      - name: Upload static evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-fp8-pinned-main-static
+          path: review-static-evidence/
           if-no-files-found: error
