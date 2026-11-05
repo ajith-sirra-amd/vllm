@@ -111,7 +111,7 @@ def _cache_bound_partials(
     Cache,
     Indices,
     Partial,
-    ROWS: tl.constexpr,
+    ROWS,
     BLOCK_ROWS: tl.constexpr,
     BLOCK_COLS: tl.constexpr,
 ):
@@ -132,7 +132,7 @@ def _cache_bound_partials(
 
 @triton.jit
 def _cache_bound_reduce(
-    Partial, WeightNorms, CacheScale, Output, PARTS: tl.constexpr, BLOCK: tl.constexpr
+    Partial, WeightNorms, CacheScale, Output, PARTS, BLOCK: tl.constexpr
 ):
     offsets = tl.arange(0, BLOCK)
     squares = tl.load(Partial + offsets * 2, offsets < PARTS, other=0)
@@ -158,7 +158,7 @@ def _q_and_cache_partials(
     Indices,
     CachePartial,
     NQ,
-    ROWS: tl.constexpr,
+    ROWS,
     SHAPE: tl.constexpr,
     STRIDE: tl.constexpr,
     QPARTS: tl.constexpr,
@@ -200,7 +200,7 @@ def _q_quant_and_cache_reduce(
     STRIDE: tl.constexpr,
     QPARTS: tl.constexpr,
     QBLOCK: tl.constexpr,
-    CACHE_PARTS: tl.constexpr,
+    CACHE_PARTS,
     CACHE_BLOCK: tl.constexpr,
 ):
     _quant_tensor(
