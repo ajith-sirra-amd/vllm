@@ -2686,6 +2686,7 @@ class AiterMLAImpl(MLACommonImpl[AiterMLAMetadata]):
                     attn_metadata,
                     k_scale,
                     backend.fp8_context,
+                    dcp_world_size,
                 )
         weight = getattr(self.kv_b_proj, "weight", None)
         eligible = (

@@ -3091,6 +3091,117 @@ class MLACommonBaseImpl(MLAAttentionImpl[A], Generic[A]):
 
         return output, output_lse
 
+    def _context_parallel_gather_prefill_kv(
+        self,
+        prefill_metadata: MLACommonPrefillMetadata,
+        chunk: MLACommonPrefillMetadata.ContextChunk,
+        kv_c_and_k_pe_cache: torch.Tensor,
+        k_scale: torch.Tensor,
+        dcp_world_size: int,
+        fused_mla_kv_concat_fn: Callable[
+            [torch.Tensor, torch.Tensor, bool], tuple[torch.Tensor, torch.Tensor]
+        ]
+        | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Gather, project and pack one chunk through the native linear path."""
+        chunked_context = prefill_metadata.chunked_context
+        assert chunked_context is not None
+        workspace = chunked_context.workspace
+        use_fp8_prefill = prefill_metadata.q_data_type == current_platform.fp8_dtype()
+        kv_b_proj_input_dtype = _get_kv_b_proj_input_dtype(
+            self.kv_b_proj, use_fp8_prefill
+        )
+        assert chunk.padded_local_seq_lens is not None
+        assert chunk.local_context_lens_allranks is not None
+        assert chunk.padded_local_cu_seq_lens is not None
+        assert chunk.padded_local_token_to_seq is not None
+        assert chunk.local_starts is not None
+
+        toks = chunk.num_local_context_tokens
+        padded_local_cu_seq_lens = chunk.padded_local_cu_seq_lens
+        block_table = prefill_metadata.block_table[chunk.request_slice]
+        if self.kv_cache_dtype == "fp8_ds_mla":
+            ops.cp_gather_and_upconvert_fp8_kv_cache(
+                src_cache=kv_c_and_k_pe_cache,
+                dst=workspace[:toks],
+                block_table=block_table,
+                workspace_starts=padded_local_cu_seq_lens,
+                batch_size=chunk.num_requests,
+                seq_starts=chunk.starts,
+            )
+        elif is_quantized_kv_cache(self.kv_cache_dtype):
+            assert k_scale is not None
+            ops.gather_and_maybe_dequant_cache(
+                src_cache=kv_c_and_k_pe_cache,
+                dst=workspace,
+                block_table=block_table,
+                cu_seq_lens=padded_local_cu_seq_lens,
+                token_to_seq=chunk.padded_local_token_to_seq,
+                num_tokens=toks,
+                kv_cache_dtype=self.kv_cache_dtype,
+                scale=k_scale,
+                seq_starts=chunk.starts,
+            )
+        else:
+            ops.cp_gather_cache(
+                src_cache=kv_c_and_k_pe_cache,
+                dst=workspace[:toks],
+                block_table=block_table,
+                cu_seq_lens=padded_local_cu_seq_lens,
+                batch_size=chunk.num_requests,
+                seq_starts=chunk.starts,
+            )
+        # workspace
+        # |------- N tokens --------|--------- N*dcp_size tokens ----------|
+        # |<- use for local_gather ->|<--------- use for allgather -------->|
+        allgather_offset = workspace.shape[0] // (dcp_world_size + 1)
+        assert allgather_offset * (dcp_world_size + 1) == workspace.shape[0]
+        assert toks <= allgather_offset
+        local_gathered_kvcache = workspace[:toks]
+        cur_allgather_workspace = workspace[
+            allgather_offset : allgather_offset * (1 + dcp_world_size)
+        ]
+        assert toks * dcp_world_size <= cur_allgather_workspace.shape[0]
+        cur_allgather_kvcache = cur_allgather_workspace[: toks * dcp_world_size]
+        dcp_manager = cast(MLADCPManager, chunked_context.dcp_manager)
+        dcp_manager.kv_gather(cur_allgather_kvcache, local_gathered_kvcache)
+        assert (
+            cur_allgather_kvcache.shape[-1]
+            == self.kv_lora_rank + self.qk_rope_head_dim
+        )
+        allgatered_kv_c_normed, allgatered_k_pe = cur_allgather_kvcache.unsqueeze(
+            1
+        ).split([self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+
+        kv_c_normed, k_pe = reorg_kvcache(
+            allgatered_kv_c_normed,
+            allgatered_k_pe,
+            padded_local_chunk_seq_lens_lst=chunk.padded_local_seq_lens,
+            local_context_lens_allranks=chunk.local_context_lens_allranks,
+            local_starts=chunk.local_starts,
+            sum_seq_len=chunk.num_context_tokens,
+            max_seq_len=chunk.max_seq_len,
+            toks=toks,
+        )
+        if kv_b_proj_input_dtype is not None:
+            kv_c_normed = kv_c_normed.to(kv_b_proj_input_dtype)
+
+        kv_nope = self.kv_b_proj(kv_c_normed)[0].view(
+            -1, self.num_heads, self.qk_nope_head_dim + self.v_head_dim
+        )
+        if fused_mla_kv_concat_fn is not None:
+            k, v = fused_mla_kv_concat_fn(kv_nope, k_pe, use_fp8_prefill)
+        else:
+            if use_fp8_prefill:
+                kv_nope = kv_nope.to(prefill_metadata.q_data_type)
+                k_pe = k_pe.to(prefill_metadata.q_data_type)
+            k_nope, v = kv_nope.split(
+                [self.qk_nope_head_dim, self.v_head_dim], dim=-1
+            )
+            k = self._concat_k_nope_k_pe(k_nope, k_pe)
+
+        return k, v
+
     def _context_parallel_compute_prefill_context(
         self,
         q: torch.Tensor,
@@ -3111,103 +3222,18 @@ class MLACommonBaseImpl(MLAAttentionImpl[A], Generic[A]):
         chunked_context = prefill_metadata.chunked_context
         assert chunked_context is not None
 
-        use_fp8_prefill = prefill_metadata.q_data_type == current_platform.fp8_dtype()
-        kv_b_proj_input_dtype = _get_kv_b_proj_input_dtype(
-            self.kv_b_proj, use_fp8_prefill
-        )
         output = None
         output_lse = None
-        workspace = chunked_context.workspace
 
         for chunk in chunked_context.chunks:
-            assert chunk.padded_local_seq_lens is not None
-            assert chunk.local_context_lens_allranks is not None
-            assert chunk.padded_local_cu_seq_lens is not None
-            assert chunk.padded_local_token_to_seq is not None
-            assert chunk.local_starts is not None
-
-            toks = chunk.num_local_context_tokens
-            padded_local_cu_seq_lens = chunk.padded_local_cu_seq_lens
-            block_table = prefill_metadata.block_table[chunk.request_slice]
-            if self.kv_cache_dtype == "fp8_ds_mla":
-                ops.cp_gather_and_upconvert_fp8_kv_cache(
-                    src_cache=kv_c_and_k_pe_cache,
-                    dst=workspace[:toks],
-                    block_table=block_table,
-                    workspace_starts=padded_local_cu_seq_lens,
-                    batch_size=chunk.num_requests,
-                    seq_starts=chunk.starts,
-                )
-            elif is_quantized_kv_cache(self.kv_cache_dtype):
-                assert k_scale is not None
-                ops.gather_and_maybe_dequant_cache(
-                    src_cache=kv_c_and_k_pe_cache,
-                    dst=workspace,
-                    block_table=block_table,
-                    cu_seq_lens=padded_local_cu_seq_lens,
-                    token_to_seq=chunk.padded_local_token_to_seq,
-                    num_tokens=toks,
-                    kv_cache_dtype=self.kv_cache_dtype,
-                    scale=k_scale,
-                    seq_starts=chunk.starts,
-                )
-            else:
-                ops.cp_gather_cache(
-                    src_cache=kv_c_and_k_pe_cache,
-                    dst=workspace[:toks],
-                    block_table=block_table,
-                    cu_seq_lens=padded_local_cu_seq_lens,
-                    batch_size=chunk.num_requests,
-                    seq_starts=chunk.starts,
-                )
-            # workspace
-            # |------- N tokens --------|--------- N*dcp_size tokens ----------|
-            # |<- use for local_gather ->|<--------- use for allgather -------->|
-            allgather_offset = workspace.shape[0] // (dcp_world_size + 1)
-            assert allgather_offset * (dcp_world_size + 1) == workspace.shape[0]
-            assert toks <= allgather_offset
-            local_gathered_kvcache = workspace[:toks]
-            cur_allgather_workspace = workspace[
-                allgather_offset : allgather_offset * (1 + dcp_world_size)
-            ]
-            assert toks * dcp_world_size <= cur_allgather_workspace.shape[0]
-            cur_allgather_kvcache = cur_allgather_workspace[: toks * dcp_world_size]
-            dcp_manager = cast(MLADCPManager, chunked_context.dcp_manager)
-            dcp_manager.kv_gather(cur_allgather_kvcache, local_gathered_kvcache)
-            assert (
-                cur_allgather_kvcache.shape[-1]
-                == self.kv_lora_rank + self.qk_rope_head_dim
+            k, v = self._context_parallel_gather_prefill_kv(
+                prefill_metadata,
+                chunk,
+                kv_c_and_k_pe_cache,
+                k_scale,
+                dcp_world_size,
+                fused_mla_kv_concat_fn,
             )
-            allgatered_kv_c_normed, allgatered_k_pe = cur_allgather_kvcache.unsqueeze(
-                1
-            ).split([self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
-
-            kv_c_normed, k_pe = reorg_kvcache(
-                allgatered_kv_c_normed,
-                allgatered_k_pe,
-                padded_local_chunk_seq_lens_lst=chunk.padded_local_seq_lens,
-                local_context_lens_allranks=chunk.local_context_lens_allranks,
-                local_starts=chunk.local_starts,
-                sum_seq_len=chunk.num_context_tokens,
-                max_seq_len=chunk.max_seq_len,
-                toks=toks,
-            )
-            if kv_b_proj_input_dtype is not None:
-                kv_c_normed = kv_c_normed.to(kv_b_proj_input_dtype)
-
-            kv_nope = self.kv_b_proj(kv_c_normed)[0].view(
-                -1, self.num_heads, self.qk_nope_head_dim + self.v_head_dim
-            )
-            if fused_mla_kv_concat_fn is not None:
-                k, v = fused_mla_kv_concat_fn(kv_nope, k_pe, use_fp8_prefill)
-            else:
-                if use_fp8_prefill:
-                    kv_nope = kv_nope.to(prefill_metadata.q_data_type)
-                    k_pe = k_pe.to(prefill_metadata.q_data_type)
-                k_nope, v = kv_nope.split(
-                    [self.qk_nope_head_dim, self.v_head_dim], dim=-1
-                )
-                k = self._concat_k_nope_k_pe(k_nope, k_pe)
 
             attn_output, attn_softmax_lse = (
                 prefill_metadata.prefill_backend.run_prefill_context_chunk(

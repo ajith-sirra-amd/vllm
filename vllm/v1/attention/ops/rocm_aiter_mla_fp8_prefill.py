@@ -241,6 +241,7 @@ def compute_context(
     metadata: "AiterMLAMetadata",
     k_scale: torch.Tensor,
     state: FP8PrefillContext,
+    dcp_world_size: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert metadata.prefill is not None
     prefill = metadata.prefill
@@ -256,16 +257,16 @@ def compute_context(
     assert len(chunked.chunks) == len(row_groups)
     output = output_lse = None
     for chunk, row_indices in zip(chunked.chunks, row_groups):
-        gathered = gather_compressed_context(
-            cache,
-            chunked.workspace,
-            prefill.block_table[chunk.request_slice],
-            chunk,
-            chunked.dcp_manager.kv_gather,
-            torch.float8_e4m3fn,
-        )
         query = q[chunk.token_slice]
         if use_fp8_context(chunk.max_query_len, chunk.max_seq_len):
+            gathered = gather_compressed_context(
+                cache,
+                chunked.workspace,
+                prefill.block_table[chunk.request_slice],
+                chunk,
+                chunked.dcp_manager.kv_gather,
+                torch.float8_e4m3fn,
+            )
             kv8 = state.project(
                 query,
                 gathered,
@@ -277,7 +278,9 @@ def compute_context(
             )
             attn_output, attn_lse = state.run(chunk, query, kv8, impl.scale)
         else:
-            k, v = project(gathered, k_scale, row_indices, params, impl.num_heads)
+            k, v = impl._context_parallel_gather_prefill_kv(
+                prefill, chunk, cache, k_scale, dcp_world_size
+            )
             attn_output, attn_lse = backend.run_prefill_context_chunk(
                 chunk,
                 query,
