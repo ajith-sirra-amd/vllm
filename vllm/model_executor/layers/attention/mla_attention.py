@@ -3166,8 +3166,7 @@ class MLACommonBaseImpl(MLAAttentionImpl[A], Generic[A]):
         dcp_manager = cast(MLADCPManager, chunked_context.dcp_manager)
         dcp_manager.kv_gather(cur_allgather_kvcache, local_gathered_kvcache)
         assert (
-            cur_allgather_kvcache.shape[-1]
-            == self.kv_lora_rank + self.qk_rope_head_dim
+            cur_allgather_kvcache.shape[-1] == self.kv_lora_rank + self.qk_rope_head_dim
         )
         allgatered_kv_c_normed, allgatered_k_pe = cur_allgather_kvcache.unsqueeze(
             1
@@ -3195,9 +3194,7 @@ class MLACommonBaseImpl(MLAAttentionImpl[A], Generic[A]):
             if use_fp8_prefill:
                 kv_nope = kv_nope.to(prefill_metadata.q_data_type)
                 k_pe = k_pe.to(prefill_metadata.q_data_type)
-            k_nope, v = kv_nope.split(
-                [self.qk_nope_head_dim, self.v_head_dim], dim=-1
-            )
+            k_nope, v = kv_nope.split([self.qk_nope_head_dim, self.v_head_dim], dim=-1)
             k = self._concat_k_nope_k_pe(k_nope, k_pe)
 
         return k, v
