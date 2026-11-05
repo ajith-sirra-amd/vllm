@@ -1,7 +1,7 @@
 name: Native FP8 checks on pinned upstream main
 on:
   push:
-    branches: [checks/pr64288-asm-static-20261104]
+    branches: [checks/pr64288-runtime-counts-20261105]
     paths: [.github/workflows/native-fp8-static.yml]
 permissions:
   contents: read
@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: a03796b8e3bfe536e22f9db741109dbf80170079
+          ref: 768a5da2a8200b84c28b7d675414c95dfbc3ca55
           fetch-depth: 0
           persist-credentials: false
       - uses: astral-sh/setup-uv@v6
@@ -69,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: a03796b8e3bfe536e22f9db741109dbf80170079
+          ref: 768a5da2a8200b84c28b7d675414c95dfbc3ca55
           fetch-depth: 0
           persist-credentials: false
       - uses: astral-sh/setup-uv@v6
